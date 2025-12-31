@@ -1,0 +1,13 @@
+# Windows 11 Software Update Tool
+# 
+# このプロジェクトはPython標準ライブラリのみを使用しています。
+# 追加のパッケージインストールは不要です。
+#
+# 使用している標準ライブラリ:
+# - tkinter (GUI)
+# - subprocess (wingetコマンド実行)
+# - threading (非同期処理)
+# - json (データ処理)
+# - re (正規表現)
+# - datetime (日時処理)
+# - os (OS操作)
