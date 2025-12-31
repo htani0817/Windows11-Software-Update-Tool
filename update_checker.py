@@ -12,6 +12,107 @@ import json
 import re
 from datetime import datetime
 import os
+import logging
+from pathlib import Path
+
+
+# ログ設定
+class Logger:
+    """ログ管理クラス"""
+    def __init__(self):
+        # ログディレクトリの作成（実行ファイルと同じ場所にlogsフォルダを作成）
+        script_dir = Path(__file__).parent.resolve()
+        self.log_dir = script_dir / "logs"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        
+        # ログファイル名（日付ベース）
+        self.log_file = self.log_dir / f"update_checker_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        
+        # ロガーの設定
+        self.logger = logging.getLogger('UpdateChecker')
+        self.logger.setLevel(logging.DEBUG)
+        
+        # ファイルハンドラー
+        file_handler = logging.FileHandler(self.log_file, encoding='utf-8')
+        file_handler.setLevel(logging.DEBUG)
+        
+        # フォーマット
+        formatter = logging.Formatter(
+            '%(asctime)s | %(levelname)-8s | %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        file_handler.setFormatter(formatter)
+        
+        self.logger.addHandler(file_handler)
+        
+        # 起動ログ
+        self.info("=" * 60)
+        self.info("Software Update Checker Started")
+        self.info(f"Log file: {self.log_file}")
+        self.info("=" * 60)
+    
+    def debug(self, message):
+        self.logger.debug(message)
+    
+    def info(self, message):
+        self.logger.info(message)
+    
+    def warning(self, message):
+        self.logger.warning(message)
+    
+    def error(self, message):
+        self.logger.error(message)
+    
+    def log_software_list(self, software_list):
+        """ソフトウェアリストをログに記録"""
+        self.info(f"Detected {len(software_list)} installed software")
+        self.info("-" * 50)
+        for sw in software_list:
+            self.debug(f"  {sw.name} | {sw.id} | v{sw.version}")
+    
+    def log_updates_available(self, software_list):
+        """利用可能なアップデートをログに記録"""
+        updates = [sw for sw in software_list if sw.has_update]
+        self.info(f"Updates available: {len(updates)}")
+        self.info("-" * 50)
+        for sw in updates:
+            self.info(f"  UPDATE: {sw.name}")
+            self.info(f"          {sw.version} -> {sw.available_version}")
+    
+    def log_update_started(self, package_ids, all_updates=False):
+        """アップデート開始をログに記録"""
+        if all_updates:
+            self.info("Starting update: ALL PACKAGES")
+        else:
+            self.info(f"Starting update: {len(package_ids)} packages")
+            for pkg_id in package_ids:
+                self.info(f"  - {pkg_id}")
+    
+    def log_update_result(self, package_id, success, error_msg=None):
+        """アップデート結果をログに記録"""
+        if success:
+            self.info(f"  SUCCESS: {package_id}")
+        else:
+            self.error(f"  FAILED: {package_id}")
+            if error_msg:
+                self.error(f"    Error: {error_msg}")
+    
+    def log_session_summary(self, total_software, updates_available, updates_applied):
+        """セッションサマリーをログに記録"""
+        self.info("=" * 60)
+        self.info("SESSION SUMMARY")
+        self.info(f"  Total software detected: {total_software}")
+        self.info(f"  Updates available: {updates_available}")
+        self.info(f"  Updates applied: {updates_applied}")
+        self.info("=" * 60)
+    
+    def get_log_path(self):
+        """ログファイルのパスを返す"""
+        return self.log_file
+    
+    def get_log_dir(self):
+        """ログディレクトリのパスを返す"""
+        return self.log_dir
 
 
 class ModernStyle:
@@ -53,6 +154,9 @@ class UpdateCheckerApp:
         self.root.geometry("1000x700")
         self.root.minsize(800, 500)
         
+        # ロガー初期化
+        self.logger = Logger()
+        
         # スタイル設定
         self.style = ModernStyle()
         self.root.configure(bg=self.style.BG_DARK)
@@ -61,13 +165,28 @@ class UpdateCheckerApp:
         self.all_software = []
         self.filtered_software = []
         self.is_scanning = False
+        self.updates_applied = 0
         
         # UI構築
         self._setup_styles()
         self._create_ui()
         
+        # 終了時の処理
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
+        
         # 初期スキャン
         self.root.after(500, self.scan_installed)
+    
+    def _on_closing(self):
+        """アプリ終了時の処理"""
+        updates_available = sum(1 for s in self.all_software if s.has_update)
+        self.logger.log_session_summary(
+            len(self.all_software),
+            updates_available,
+            self.updates_applied
+        )
+        self.logger.info("Application closed")
+        self.root.destroy()
     
     def _setup_styles(self):
         """ttkスタイルの設定"""
@@ -202,6 +321,11 @@ class UpdateCheckerApp:
         self.update_all_btn = self._create_button(btn_frame, "⬆️ すべて更新", self.update_all,
                                                   bg=self.style.WARNING)
         self.update_all_btn.pack(side=tk.LEFT, padx=5)
+        
+        # ログを開くボタン
+        self.log_btn = self._create_button(btn_frame, "📄 ログを開く", self.open_log_folder,
+                                          bg=self.style.BG_LIGHT)
+        self.log_btn.pack(side=tk.LEFT, padx=5)
     
     def _create_button(self, parent, text, command, bg=None):
         """カスタムボタンの作成"""
@@ -221,11 +345,13 @@ class UpdateCheckerApp:
                        pady=5,
                        cursor="hand2")
         
+        original_bg = bg
+        
         def on_enter(e):
             btn.config(bg=self.style.ACCENT_HOVER)
         
         def on_leave(e):
-            btn.config(bg=bg)
+            btn.config(bg=original_bg)
         
         btn.bind("<Enter>", on_enter)
         btn.bind("<Leave>", on_leave)
@@ -299,6 +425,7 @@ class UpdateCheckerApp:
         if color is None:
             color = self.style.TEXT
         self.status_label.config(text=message, fg=color)
+        self.logger.info(f"Status: {message}")
     
     def _update_count(self):
         """カウント表示の更新"""
@@ -401,12 +528,23 @@ class UpdateCheckerApp:
                            justify=tk.LEFT)
             label.pack(padx=20, pady=20, anchor=tk.W)
     
+    def open_log_folder(self):
+        """ログフォルダを開く"""
+        log_dir = self.logger.get_log_dir()
+        self.logger.info(f"Opening log folder: {log_dir}")
+        
+        if os.name == 'nt':
+            os.startfile(log_dir)
+        else:
+            subprocess.run(['xdg-open', str(log_dir)])
+    
     def scan_installed(self):
         """インストール済みソフトウェアのスキャン"""
         if self.is_scanning:
             return
         
         self.is_scanning = True
+        self.logger.info("Starting software scan...")
         self._set_status("インストール済みソフトウェアをスキャン中...", self.style.ACCENT)
         self._show_progress(True)
         self._disable_buttons()
@@ -419,6 +557,7 @@ class UpdateCheckerApp:
         """スキャン処理（別スレッド）"""
         try:
             # winget list コマンドを実行
+            self.logger.debug("Executing: winget list --disable-interactivity")
             result = subprocess.run(
                 ["winget", "list", "--disable-interactivity"],
                 capture_output=True,
@@ -428,14 +567,17 @@ class UpdateCheckerApp:
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             )
             
+            self.logger.debug(f"winget list returned code: {result.returncode}")
             software_list = self._parse_winget_list(result.stdout)
             
             self.root.after(0, lambda: self._on_scan_complete(software_list))
             
         except FileNotFoundError:
+            self.logger.error("winget not found")
             self.root.after(0, lambda: self._on_scan_error(
                 "wingetが見つかりません。Windows 10/11の最新版をご利用ください。"))
         except Exception as e:
+            self.logger.error(f"Scan error: {str(e)}")
             self.root.after(0, lambda: self._on_scan_error(str(e)))
     
     def _parse_winget_list(self, output):
@@ -505,6 +647,7 @@ class UpdateCheckerApp:
     def _on_scan_complete(self, software_list):
         """スキャン完了時の処理"""
         self.all_software = software_list
+        self.logger.log_software_list(software_list)
         self._apply_filter()
         self._update_count()
         self._set_status(f"スキャン完了 - {len(software_list)} 件のソフトウェアを検出", 
@@ -515,6 +658,7 @@ class UpdateCheckerApp:
     
     def _on_scan_error(self, error_message):
         """スキャンエラー時の処理"""
+        self.logger.error(f"Scan error: {error_message}")
         self._set_status(f"エラー: {error_message}", self.style.ERROR)
         self._show_progress(False)
         self._enable_buttons()
@@ -527,6 +671,7 @@ class UpdateCheckerApp:
             return
         
         self.is_scanning = True
+        self.logger.info("Checking for updates...")
         self._set_status("アップデートを確認中...", self.style.ACCENT)
         self._show_progress(True)
         self._disable_buttons()
@@ -538,6 +683,7 @@ class UpdateCheckerApp:
     def _check_updates_thread(self):
         """アップデート確認処理（別スレッド）"""
         try:
+            self.logger.debug("Executing: winget upgrade --disable-interactivity")
             result = subprocess.run(
                 ["winget", "upgrade", "--disable-interactivity"],
                 capture_output=True,
@@ -547,10 +693,12 @@ class UpdateCheckerApp:
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             )
             
+            self.logger.debug(f"winget upgrade returned code: {result.returncode}")
             updates = self._parse_winget_upgrade(result.stdout)
             self.root.after(0, lambda: self._on_updates_checked(updates))
             
         except Exception as e:
+            self.logger.error(f"Update check error: {str(e)}")
             self.root.after(0, lambda: self._on_scan_error(str(e)))
     
     def _parse_winget_upgrade(self, output):
@@ -617,6 +765,7 @@ class UpdateCheckerApp:
                     software.available_version = software.version
                     software.has_update = False
         
+        self.logger.log_updates_available(self.all_software)
         self._apply_filter()
         self._update_count()
         
@@ -667,51 +816,78 @@ class UpdateCheckerApp:
     
     def _run_updates(self, package_ids, all_updates=False):
         """アップデートの実行"""
+        self.logger.log_update_started(package_ids, all_updates)
         self._set_status("アップデートを実行中...", self.style.ACCENT)
         self._show_progress(True)
         self._disable_buttons()
         
         def update_thread():
+            success_count = 0
             try:
                 if all_updates:
                     # すべて更新
-                    subprocess.run(
+                    self.logger.info("Executing: winget upgrade --all")
+                    result = subprocess.run(
                         ["winget", "upgrade", "--all", "--silent", "--accept-package-agreements", 
                          "--accept-source-agreements"],
                         capture_output=True,
                         text=True,
                         creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                     )
+                    if result.returncode == 0:
+                        success_count = len(package_ids)
+                        self.logger.info("All updates completed successfully")
+                    else:
+                        self.logger.warning(f"Some updates may have failed: {result.stderr}")
                 else:
                     # 個別に更新
                     for pkg_id in package_ids:
-                        subprocess.run(
+                        self.logger.info(f"Updating: {pkg_id}")
+                        result = subprocess.run(
                             ["winget", "upgrade", pkg_id, "--silent", 
                              "--accept-package-agreements", "--accept-source-agreements"],
                             capture_output=True,
                             text=True,
                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                         )
+                        if result.returncode == 0:
+                            self.logger.log_update_result(pkg_id, True)
+                            success_count += 1
+                        else:
+                            self.logger.log_update_result(pkg_id, False, result.stderr)
                 
-                self.root.after(0, self._on_update_complete)
+                self.updates_applied += success_count
+                self.root.after(0, lambda: self._on_update_complete(success_count, len(package_ids)))
                 
             except Exception as e:
+                self.logger.error(f"Update error: {str(e)}")
                 self.root.after(0, lambda: self._on_update_error(str(e)))
         
         thread = threading.Thread(target=update_thread)
         thread.daemon = True
         thread.start()
     
-    def _on_update_complete(self):
+    def _on_update_complete(self, success_count, total_count):
         """アップデート完了時の処理"""
         self._show_progress(False)
         self._enable_buttons()
-        self._set_status("✅ アップデートが完了しました", self.style.SUCCESS)
-        messagebox.showinfo("完了", "アップデートが完了しました。\n再スキャンして確認してください。")
+        
+        if success_count == total_count:
+            self.logger.info(f"All {total_count} updates completed successfully")
+            self._set_status("✅ アップデートが完了しました", self.style.SUCCESS)
+            messagebox.showinfo("完了", f"アップデートが完了しました。\n成功: {success_count}/{total_count}")
+        else:
+            self.logger.warning(f"Updates completed with some failures: {success_count}/{total_count}")
+            self._set_status(f"⚠️ 一部のアップデートが失敗しました ({success_count}/{total_count})", 
+                           self.style.WARNING)
+            messagebox.showwarning("完了", 
+                                  f"一部のアップデートが失敗しました。\n成功: {success_count}/{total_count}\n\n詳細はログを確認してください。")
+        
         self.scan_installed()
     
     def _on_update_error(self, error_message):
         """アップデートエラー時の処理"""
+        self.logger.error(f"Update error: {error_message}")
         self._show_progress(False)
         self._enable_buttons()
         self._set_status(f"エラー: {error_message}", self.style.ERROR)
